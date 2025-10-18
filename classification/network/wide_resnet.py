@@ -102,7 +102,7 @@ class ResBlock_bot(nn.Module):
         return self.forward(x, get_x_bn_relu=get_x_bn_relu)
 
 class wideResNet(nn.Module):
-    def __init__(self, num_class=2):
+    def __init__(self, num_class=4):
         super(wideResNet, self).__init__()
         self.conv1a = nn.Conv2d(3, 64, 3, padding=1, bias=False)
 

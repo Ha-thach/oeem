@@ -2,8 +2,11 @@
 ---
 side_length: 112
 stride: 56
-num_of_class: 2
-mean: [0.787, 0.511, 0.785]
-std: [0.167, 0.248, 0.131]
+num_of_class: 5
+mean: [0.7066, 0.4772, 0.6672]
+std:  [0.1677, 0.1839, 0.1412]
 scales: [1, 1.25, 1.5, 1.75, 2]
 network_image_size: 224
+
+
+
