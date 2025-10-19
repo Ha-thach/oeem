@@ -96,8 +96,11 @@ if __name__ == '__main__':
     # ====================================================
     # 6️⃣ Dataset và DataLoader
     # ====================================================
-    data_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/train'
-    TrainDataset = dataset.OriginPatchesDataset(data_path_name=data_path_name, transform=train_transform)
+    train_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/train'
+    valid_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/valid'
+    test_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/test'
+    
+    TrainDataset = dataset.OriginPatchesDataset(data_path_name=train_path_name, transform=train_transform)
     print(f"📂 Training dataset loaded: {len(TrainDataset)} samples")
 
     TrainDataLoader = DataLoader(
