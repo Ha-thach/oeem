@@ -20,42 +20,11 @@ Install dependents library
 pip install -v requirements.txt
 ```
 
-## 🧩 2. Directory Structure (simplified)
 
-```
-OEEM/
-├── classification/
-│   ├── train_stage1.py          
-│   ├── generate_pseudo_masks.py 
-│   └── weights/                 
-│
-├── segmentation/
-│   ├── train_stage2.py          
-│   ├── test_stage2.py           
-│   ├── dataset.py               
-│   ├── models/                  
-│   ├── results/
-│   ├── configuration_seg.yml    
-│   └── demo/
-│       └── oeem_vis.png
-│
-└── data/
-    └── BCSS_WSSS/
-        ├── train/
-        ├── valid/
-        │     └──img
-        │      └──mask
-        ├── valid/
-              └──img
-              └──mask     
-```
-
----
-
-## 🧠 3. Stage 1 — Pseudo Mask Generation
+## 2. Stage 1 — Pseudo Mask Generation
 
 ### (a) Train classification backbone
-- Tải weights của ResNet18.pth.tar
+- Tải weights của ResNet18.pth.tar https://drive.google.com/file/d/1QBnZBc_Eu5eTprd7ZuADAK_Fdk56MWse/view?usp=sharing 
 - Cập nhật dataset_dir ở clasification/configuration.yaml
 ```bash
 python classification/train_stage1.py --epochs 20 --batch 16 --lr 1e-4
@@ -66,11 +35,11 @@ python classification/train_stage1.py --epochs 20 --batch 16 --lr 1e-4
 python classification/generate_pseudo_masks.py --model resnet18 --out_dir data/BCSS_WSSS/pseudo_mask/
 ```
 
-Output là CAM được được lưu dạng data/BCSS_WSSS/pseudo_mask/*.png
+Output là CAM được được lưu dạng /pseudo_mask/*.png
 
 ---
 
-## 🧩 4. Stage 2 — OEEM Segmentation
+## 🧩 3. Stage 2 — OEEM Segmentation
 
 -  Tiếp tục cập nhật config data_dir ở`segmentation/configuration_seg.yml`)
 - Train 
@@ -86,7 +55,7 @@ python segmentation/test_stage2.py
 
 ---
 
-## 📈 5. Expected Metrics (on mask vs mask sanity check)
+## 4. Expected Metrics 
 
 | Metric | Expected (mask vs mask) | Meaning |
 |---------|-------------------------|----------|
@@ -97,7 +66,7 @@ python segmentation/test_stage2.py
 
 ---
 
-## 🧩 6. Palette for Visualization (BCSS-WSSS)
+## 5. Palette for Visualization (BCSS-WSSS)
 
 ```python
 LABEL_TO_COLOR = {
@@ -109,7 +78,7 @@ LABEL_TO_COLOR = {
 ```
 
 
-## 🧠 8. Key Points for BCSS_WSSS
+## 6. Key Points for BCSS_WSSS
 
 | Stage | Data Input | Output |
 |--------|-------------|---------|
