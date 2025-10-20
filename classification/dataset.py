@@ -5,11 +5,12 @@ from torch.utils.data import Dataset
 import os
 import numpy as np
 from PIL import Image
-from utils.pyutils import multiscale_online_crop
 from torchvision import transforms
 
+
 # ============================================================
-# Hàm đọc label từ tên file: [01010]
+# 🧩 1️⃣ Hàm đọc label từ tên file [xxxxx]
+# ============================================================
 def get_file_label(filename: str, num_class: int = 5) -> np.ndarray:
     """
     Trích one-hot label từ tên file BCSS-WSSS, ví dụ:
@@ -25,19 +26,20 @@ def get_file_label(filename: str, num_class: int = 5) -> np.ndarray:
 
 
 # ============================================================
-# 2️⃣ Dataset gốc cho phân loại patch-level (Stage 1)
+# 🧠 2️⃣ Dataset cho huấn luyện (ảnh + label từ filename)
 # ============================================================
-class OriginPatchesDataset(Dataset):
+class TrainPatchesDataset(Dataset):
     """
-    Dataset đọc patch ảnh BCSS-WSSS có label nằm trong tên file dạng [xxxxx].
+    Dataset dùng cho giai đoạn classification training (Stage 1).
+    - Ảnh lấy từ folder `train`
+    - Label lấy từ tên file (one-hot [xxxxx])
     """
-    def __init__(self, data_path_name=None, transform=None, num_class=5):
-        self.path = data_path_name
-        # ⚙️ Lọc file hợp lệ, tránh .DS_Store hoặc file ẩn
-        self.files = sorted(
-            [f for f in os.listdir(data_path_name)
-             if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        )
+    def __init__(self, data_path, transform=None, num_class=5):
+        self.path = data_path
+        self.files = sorted([
+            f for f in os.listdir(data_path)
+            if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ])
         self.transform = transform
         self.num_class = num_class
 
@@ -45,61 +47,71 @@ class OriginPatchesDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        image_path = os.path.join(self.path, self.files[idx])
-        im = Image.open(image_path).convert("RGB")
-        label = get_file_label(self.files[idx], num_class=self.num_class)
+        fname = self.files[idx]
+        img_path = os.path.join(self.path, fname)
+        img = Image.open(img_path).convert("RGB")
+        label = get_file_label(fname, num_class=self.num_class)
 
-        # ⚠️ Không cần ToTensor() ở đây nếu transform đã có ToTensor()
         if self.transform:
-            im = self.transform(im)
+            img = self.transform(img)
         else:
-            im = transforms.ToTensor()(im)
+            img = transforms.ToTensor()(img)
 
-        return im, label
+        return img, torch.tensor(label, dtype=torch.float32)
 
 
 # ============================================================
-# 3️⃣ Dataset cho Validation hoặc Offline patch extraction
+# 🧩 3️⃣ Dataset cho validation (ảnh + mask thực tế)
 # ============================================================
-class OfflineDataset(Dataset):
+class ValidImageMaskDataset(Dataset):
     """
-    Dataset dùng cho validation / CAM generation.
+    Dataset dùng cho validation segmentation.
+    - Ảnh đọc từ `valid/img`
+    - Mask đọc từ `valid/mask`
+    - Validation dataset: có image + mask.Dùng để sinh CAM và tính IoU.
     """
-    def __init__(self, dataset_path, transform=None):
-        self.path = dataset_path
-        self.files = sorted(
-            [f for f in os.listdir(dataset_path)
-             if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        )
+    def __init__(self, img_dir, mask_dir, transform=None):
+        self.img_dir = img_dir
+        self.mask_dir = mask_dir
+        self.img_files = sorted([
+            f for f in os.listdir(img_dir)
+            if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ])
         self.transform = transform
 
     def __len__(self):
-        return len(self.files)
+        return len(self.img_files)
 
     def __getitem__(self, idx):
-        image_path = os.path.join(self.path, self.files[idx])
-        im = Image.open(image_path).convert("RGB")
-        positions = list(map(int, re.findall(r'\d+', self.files[idx])))
-        if self.transform:
-            im = self.transform(im)
-        else:
-            im = transforms.ToTensor()(im)
-        return im, np.array(positions)
+        fname = self.img_files[idx]
+        img_path = os.path.join(self.img_dir, fname)
+        mask_path = os.path.join(self.mask_dir, fname)
 
+        img = Image.open(img_path).convert("RGB")
+        mask = Image.open(mask_path).convert("L")  # mask grayscale (0–C−1)
+        if self.transform:
+            img = self.transform(img)
+        else:
+            img = transforms.ToTensor()(img)
+
+        mask = torch.tensor(np.array(mask), dtype=torch.long)
+
+        return img, mask, fname
 
 # ============================================================
-# 4️⃣ Dataset cho sinh CAM (Stage 2)
+# 🔬 4️⃣ Dataset dùng cho multi-scale CAM (Stage 2)
 # ============================================================
 class TrainingSetCAM(Dataset):
     """
     Dataset sinh patch đa tỉ lệ để train segmentation với CAM.
+    - Sử dụng multiscale_online_crop() để tạo patch tại nhiều scale
     """
-    def __init__(self, data_path_name, transform, patch_size, stride, scales, num_class=5):
-        self.path = data_path_name
-        self.files = sorted(
-            [f for f in os.listdir(data_path_name)
-             if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        )
+    def __init__(self, data_path, transform, patch_size, stride, scales, num_class=5):
+        self.path = data_path
+        self.files = sorted([
+            f for f in os.listdir(data_path)
+            if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ])
         self.transform = transform
         self.patch_size = patch_size
         self.stride = stride
@@ -110,51 +122,36 @@ class TrainingSetCAM(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        image_path = os.path.join(self.path, self.files[idx])
-        im = np.asarray(Image.open(image_path).convert("RGB"))
-        scaled_im_list, scaled_position_list = multiscale_online_crop(im, self.patch_size, self.stride, self.scales)
+        fname = self.files[idx]
+        img_path = os.path.join(self.path, fname)
+        img = np.asarray(Image.open(img_path).convert("RGB"))
+        scaled_im_list, scaled_pos_list = multiscale_online_crop(img, self.patch_size, self.stride, self.scales)
 
-        # Áp transform cho từng patch
         if self.transform:
             for im_list in scaled_im_list:
-                for patch_id in range(len(im_list)):
-                    im_list[patch_id] = self.transform(im_list[patch_id])
+                for i in range(len(im_list)):
+                    im_list[i] = self.transform(im_list[i])
 
-        label = get_file_label(self.files[idx], num_class=self.num_class)
-        return self.files[idx], scaled_im_list, scaled_position_list, self.scales, label
+        label = get_file_label(fname, num_class=self.num_class)
+        return fname, scaled_im_list, scaled_pos_list, self.scales, label
 
-
-# ============================================================
-# 5️⃣ Dataset chính cho BCSS-WSSS segmentation
-# ============================================================
-class BCSS_WSSS_Dataset(Dataset):
-    """
-    Dataset chính cho BCSS-WSSS segmentation (weakly-supervised).
-    Mỗi file ảnh có label trong tên, ví dụ: patch_[01010].png.
-    """
-    CLASSES = ["TUM", "STR", "LYM", "NEC"]
-
-    def __init__(self, data_path_name=None, transform=None, num_class=4):
-        self.path_name = data_path_name
-        # ⚙️ Lọc file hợp lệ, bỏ .DS_Store
-        self.files = sorted(
-            [f for f in os.listdir(data_path_name)
-             if not f.startswith('.') and f.lower().endswith('.png')]
-        )
+class PseudoSegDataset(Dataset):
+    def __init__(self, img_dir, mask_dir, transform=None):
+        self.img_dir = img_dir
+        self.mask_dir = mask_dir
+        self.images = sorted(os.listdir(img_dir))
+        self.masks = sorted(os.listdir(mask_dir))
         self.transform = transform
-        self.num_class = num_class
 
     def __len__(self):
-        return len(self.files)
+        return len(self.images)
 
     def __getitem__(self, idx):
-        image_path = os.path.join(self.path_name, self.files[idx])
-        im = Image.open(image_path).convert("RGB")
-        label = get_file_label(self.files[idx], num_class=self.num_class)
+        img = Image.open(os.path.join(self.img_dir, self.images[idx])).convert('RGB')
+        mask = Image.open(os.path.join(self.mask_dir, self.masks[idx]))
+        mask = np.array(mask, dtype=np.int64)
 
         if self.transform:
-            im = self.transform(im)
-        else:
-            im = transforms.ToTensor()(im)
-
-        return im, label
+            img = self.transform(img)
+        mask = torch.tensor(mask, dtype=torch.long)
+        return img, mask

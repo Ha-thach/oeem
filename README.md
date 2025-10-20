@@ -1,107 +1,118 @@
-## OEEM
+# OEEM (Online Easy Example Mining) for BCSS_WSSS
 
-Yi Li*, Yiduo Yu*, Yiwen Zou*, Tianqi Xiang, Xiaomeng Li, "Online Easy Example Mining for Weakly-supervised Gland Segmentation from Histology Images", MICCAI 2022 (Accepted). [[paper](https://arxiv.org/abs/2206.06665)]
+## Mục tiêu
+Áp dụng **OEEM (Online Easy Example Mining)** cho **Weakly-Supervised Segmentation** trên dataset **BCSS_WSSS**, gồm hai giai đoạn:
 
-### 1. Introduction
-This framework is designed for histology images, containing two stages. The first classification stage generates pseudo-masks for pathes. And the segmentation stage uses OEEM to mitigate the noise in pseudo-masks dynamically.
+1. **Stage 1 – Pseudo Mask Generation (Classification-based CAM)**
+2. **Stage 2 – Segmentation Training with DeeplabV2**
 
-![framework visualization](segmentation/demo/oeem_vis.png)
+---
 
-### 1. Environment
-
-This code has been tested with Python 3.7, PyTorch 1.10.2, CUDA 11.3 mmseg 0.8.0 and mmcv 1.4.0 on Ubuntu 20.04.
-
-### 2. Preparation
-
-Download [resources](https://pan.baidu.com/s/1htY5nZacceXj_m2FlY8uXw) (dataset, weights) with extract code snb3, then link to codes.
-```shell
-git clone https://github.com/XMed-Lab/OEEM.git
-cd OEEM
-ln -s OEEM_resources/glas_cls classification/glas
-ln -s OEEM_resources/glas_seg segmentation/glas
-ln -s OEEM_resources/weights classification/weights
-ln -s OEEM_resources/weights segmentation/weights
+## 1. Environment 
+Create new virtual environment
+```bash
+conda create -n oeem python=3.10.19
+conda activate oeem
 ```
 
-Install library dependencies
-```shell
-pip install -r requirements.txt
+Install dependents library
+```bash
+pip install -v requirements.txt
 ```
 
-Install mmsegentation.
-```shell
-cd segmentation
-pip install -U openmim
-mim install mmcv-full==1.4.0
-pip install -v -e .
-```
-
-### 3. Training
-
-Train classification model.
-
-```shell
-python classification/train.py -d 0 -m res38d
-```
-
-Generate pseudo-mask (WSI size). The output will be in `[model_name]_best_train_pseudo_mask` folder.
-
-```shell
-python classification/prepare_seg_inputs.py -d 0 -ckpt res38d_best
-```
-
-Split WSI pseudo-mask to patches for segmentation.
-
-```shell
-python segmentation/tools/crop_img_and_gt.py segmentation/glas/images classification/res38d_best_train_pseudo_mask segmentation/glas
-```
-
-Train segmentation model.
-
-```shell
-cd segmentation
-bash tools/dist_train.sh configs/pspnet_oeem/pspnet_wres38-d8_10k_histo.py 1 runs/oeem
-```
-
-### 4. Testing
-
-Test segmentation model.
-
-```shell
-cd segmentation
-bash tools/dist_test.sh configs/pspnet_oeem/pspnet_wres38-d8_10k_histo_test.py runs/oeem/[name of best ckpt] 1
-```
-
-Merge patches and evaluation.
-
-```shell
-python tools/merge_patches.py glas/test_patches glas/test_wsi 2
-python tools/count_miou.py glas/test_wsi glas/gt_val 2
-```
-
-Results compared with WSSS for natural images:
-| Method  | mIoU   |  Dice  |
-| ---------- | :-----------:  | :-----------: |
-| SEAM | 66.11%   | 79.59%     |
-| Adv-CAM | 68.54%   | 81.33%     |
-| SC-CAM | 71.52%   | 83.40%     |
-| Ours | 77.56%   | 87.36%     |
-
-### 5. Citation
+## 🧩 2. Directory Structure (simplified)
 
 ```
-@misc{https://doi.org/10.48550/arxiv.2206.06665,
-  doi = {10.48550/ARXIV.2206.06665},
-  url = {https://arxiv.org/abs/2206.06665},
-  author = {Li, Yi and Yu, Yiduo and Zou, Yiwen and Xiang, Tianqi and Li, Xiaomeng},
-  keywords = {Computer Vision and Pattern Recognition (cs.CV), Artificial Intelligence (cs.AI), FOS: Computer and information sciences, FOS: Computer and information sciences},
-  title = {Online Easy Example Mining for Weakly-supervised Gland Segmentation from Histology Images},
-  publisher = {arXiv},
-  year = {2022},
-  copyright = {Creative Commons Attribution 4.0 International}
+OEEM/
+├── classification/
+│   ├── train_stage1.py          
+│   ├── generate_pseudo_masks.py 
+│   └── weights/                 
+│
+├── segmentation/
+│   ├── train_stage2.py          
+│   ├── test_stage2.py           
+│   ├── dataset.py               
+│   ├── models/                  
+│   ├── results/
+│   ├── configuration_seg.yml    
+│   └── demo/
+│       └── oeem_vis.png
+│
+└── data/
+    └── BCSS_WSSS/
+        ├── train/
+        ├── valid/
+        │     └──img
+        │      └──mask
+        ├── valid/
+              └──img
+              └──mask     
+```
+
+---
+
+## 🧠 3. Stage 1 — Pseudo Mask Generation
+
+### (a) Train classification backbone
+- Tải weights của ResNet18.pth.tar
+- Cập nhật dataset_dir ở clasification/configuration.yaml
+```bash
+python classification/train_stage1.py --epochs 20 --batch 16 --lr 1e-4
+```
+
+### (b) Generate pseudo masks (CAM)
+```bash
+python classification/generate_pseudo_masks.py --model resnet18 --out_dir data/BCSS_WSSS/pseudo_mask/
+```
+
+Output là CAM được được lưu dạng data/BCSS_WSSS/pseudo_mask/*.png
+
+---
+
+## 🧩 4. Stage 2 — OEEM Segmentation
+
+-  Tiếp tục cập nhật config data_dir ở`segmentation/configuration_seg.yml`)
+- Train 
+
+```bash
+python segmentation/train_stage2.py --epoch 20
+```
+
+### (c) Test segmentation model
+```bash
+python segmentation/test_stage2.py
+```
+
+---
+
+## 📈 5. Expected Metrics (on mask vs mask sanity check)
+
+| Metric | Expected (mask vs mask) | Meaning |
+|---------|-------------------------|----------|
+| mIoU | 100% | correct metric setup |
+| Dice | 100% | perfect overlap |
+| FwIoU | 100% | class-weighted IoU correct |
+| bIoU | 100% | boundary logic valid |
+
+---
+
+## 🧩 6. Palette for Visualization (BCSS-WSSS)
+
+```python
+LABEL_TO_COLOR = {
+    0: [255, 0, 0],     # Tumor (TUM)
+    1: [0, 255, 0],     # Stroma (STR)
+    2: [0, 0, 255],     # Lymphocyte (LYM)
+    3: [153, 0, 255]    # Necrosis (NEC)
 }
 ```
 
-### License
 
-This repository is released under MIT License (see LICENSE file for details).
+## 🧠 8. Key Points for BCSS_WSSS
+
+| Stage | Data Input | Output |
+|--------|-------------|---------|
+| Stage 1 | Patchs + class labels | Pseudo masks (CAM) |
+| Stage 2 | Images + pseudo masks | Final segmentation model |
+| Testing | Validation set | Predicted color masks + metrics |

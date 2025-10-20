@@ -1,0 +1,40 @@
+# --- Dataset & Paths ---
+model_name: resnet38                  # tên model stage 1 (để tìm pseudo mask)
+paths:
+  train: "/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/train" # đường dẫn ảnh train
+  valid: "/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/valid/img" # đường dẫn ảnh valid
+  mask_valid: "/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/valid/mask" # đường dẫn mask valid (nếu có)
+  valid_result: classification/valid_result  # đường dẫn kết quả valid của stage 1 (mặc định))
+  weights: results/weights
+  results: results/
+          
+
+# --- Pseudo mask ---
+pseudo_mask_dir: ${paths.valid_result}/${model_name}/pseudo_mask
+
+# --- Data info ---
+num_classes: 4
+image_size: 512
+mean: [0.485, 0.456, 0.406]
+std: [0.229, 0.224, 0.225]
+
+# --- Model & Training ---
+model:
+  name: DeepLabV3Plus
+  backbone: resnet50             
+  pretrained: true
+  decoder_channels: 256
+
+train:
+  batch_size: 4
+  epochs: 20
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  optimizer: adam                  # adam / sgd
+  loss: cross_entropy              # cross_entropy / dice / ce+dice
+
+# --- Runtime ---
+device: cuda
+num_workers: 4
+save_dir: results/
+log_dir: results/logs/

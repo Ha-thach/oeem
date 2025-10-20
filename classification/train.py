@@ -1,194 +1,235 @@
 import argparse
-import torch
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import os
-from torchvision import transforms
-import dataset
+import sys
+import importlib
+import torch
 from torch.utils.data import DataLoader
+from torchvision import transforms
+from tqdm import tqdm
+from omegaconf import OmegaConf
+
+import dataset
 from utils.metric import get_overall_valid_score
 from utils.generate_CAM import generate_validation_cam
-from utils.pyutils import crop_validation_images
 from utils.torchutils import PolyOptimizer
-import yaml
-import importlib
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-batch', default=20, type=int)
-    parser.add_argument('-epoch', default=2, type=int)
-    parser.add_argument('-lr', default=0.01, type=float)
-    parser.add_argument('-test_every', default=5, type=int, help="how often to test a model while training")
-    parser.add_argument('-d', '--device', nargs='+', help='GPU id to use parallel (e.g. -d 0 1)', type=int, default=None)
-    parser.add_argument('-m', type=str, required=True, help='the save model name')
+def safe_load_checkpoint(path, device):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+    try:
+        ckpt = torch.load(path, map_location=device)
+    except Exception as e:
+        print(f"Default torch.load failed: {e}")
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+
+    if isinstance(ckpt, dict):
+        for key in ["state_dict", "model", "module", "weights", "net"]:
+            if key in ckpt and isinstance(ckpt[key], dict):
+                return ckpt
+        if all(isinstance(v, torch.Tensor) for v in ckpt.values()):
+            return {"model": ckpt}
+    return {"model": ckpt}
+
+
+def strip_module_prefix(state_dict):
+    return {k[len("module."):] if k.startswith("module.") else k: v for k, v in state_dict.items()}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train or validate classifier using config YAML")
+    parser.add_argument("--config", type=str, required=True, help="path to YAML config")
+    parser.add_argument("-m", "--model_name", type=str, required=True, help="model name to save")
+    parser.add_argument("--batch", type=int, default=None, help="override batch size")
+    parser.add_argument("--epoch", type=int, default=None, help="override epochs")
+    parser.add_argument("--lr", type=float, default=None, help="override learning rate")
+    parser.add_argument("--resume", type=str, default=None, help="path to checkpoint to resume training")
+    parser.add_argument("--eval_only", action="store_true", help="run validation only without training")
     args = parser.parse_args()
 
-    # ====================================================
-    # 1️⃣ Thiết lập thiết bị
-    # ====================================================
+    cfg = OmegaConf.load(args.config)
+    print("Loaded config from:", args.config)
+    print(OmegaConf.to_yaml(cfg))
+
+    if args.batch:
+        cfg.batch_size = args.batch
+    if args.epoch:
+        cfg.epochs = args.epoch
+    if args.lr:
+        cfg.learning_rate = args.lr
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🧠 Using device: {device}")
+    print(f"Using device: {device}")
 
-    batch_size = args.batch
-    epochs = args.epoch
-    base_lr = args.lr
-    test_every = args.test_every
-    devices = args.device
-    model_name = args.m
+    paths = cfg.paths
+    os.makedirs(paths.weights, exist_ok=True)
+    os.makedirs(paths.results, exist_ok=True)
+    os.makedirs(paths.valid_result, exist_ok=True)
 
-    # ====================================================
-    # 2️⃣ Đọc file cấu hình
-    # ====================================================
-    with open('classification/configuration.yml') as f:
-        config = yaml.safe_load(f)
+    # Logging setup
+    log_dir = os.path.join(paths.results, args.model_name)
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "logging.txt")
 
-    mean = config['mean']
-    std = config['std']
-    network_image_size = config['network_image_size']
-    scales = config['scales']
+    sys.stdout = open(log_path, "a", buffering=1)
+    sys.stderr = sys.stdout
 
-    os.makedirs('./classification/weights', exist_ok=True)
-    os.makedirs('./classification/result', exist_ok=True)
+    print("=" * 80)
+    print(f"Logging started for model: {args.model_name}")
+    print(f"Config file: {args.config}")
+    print(f"Logs will be saved to: {log_path}")
+    print("=" * 80)
 
-    # ====================================================
-    # 3️⃣ Chuẩn bị validation folder
-    # ====================================================
-    validation_folder_name = 'classification/valid_result'
-    validation_dataset_path = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/valid/img'
-    validation_mask_path = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/valid/mask'
-
-    if not os.path.exists(validation_folder_name):
-        os.mkdir(validation_folder_name)
-        print('🪄 Cropping validation set images ...')
-        crop_validation_images(validation_dataset_path, network_image_size, network_image_size, scales, validation_folder_name)
-        print('✅ Cropping finishes!')
-
-    # ====================================================
-    # 4️⃣ Load model
-    # ====================================================
-    resnet38_path = "classification/weights/res38d.pth.tar"
-
-    net = getattr(importlib.import_module("network.wide_resnet"), 'wideResNet')()
-    checkpoint = torch.load(resnet38_path, map_location=device)
-
-    # Nếu checkpoint có chứa key 'state_dict', load chuẩn
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        net.load_state_dict(checkpoint["state_dict"], strict=False)
-    else:
-        net.load_state_dict(checkpoint, strict=False)
-
-    if torch.cuda.is_available() and devices:
-        net = torch.nn.DataParallel(net, device_ids=devices)
-    net = net.to(device)
-
-    # ====================================================
-    # 5️⃣ Data augmentation
-    # ====================================================
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(size=network_image_size, scale=(0.7, 1)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.ToTensor(),  # ⚠️ cần thiết cho Normalize
-        transforms.Normalize(mean=mean, std=std)
-    ])
-
-    # ====================================================
-    # 6️⃣ Dataset và DataLoader
-    # ====================================================
-    train_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/train'
-    valid_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/valid'
-    test_path_name = '/Users/thachha/Desktop/AIO2025-official/AIMA/CP- WSSS/PBIP/data/BCSS-WSSS/sub/test'
-    
-    TrainDataset = dataset.OriginPatchesDataset(data_path_name=train_path_name, transform=train_transform)
-    print(f"📂 Training dataset loaded: {len(TrainDataset)} samples")
-
-    TrainDataLoader = DataLoader(
-        TrainDataset,
-        batch_size=batch_size,
-        num_workers=0 if device == "cpu" else 4,
-        shuffle=True,
-        drop_last=True
+    # Build model
+    NetClass = getattr(importlib.import_module("network.wide_resnet"), "wideResNet")
+    net = NetClass(num_class=cfg.num_classes)
+    optimizer = PolyOptimizer(
+        net.parameters(),
+        lr=cfg.learning_rate,
+        weight_decay=1e-4,
+        max_step=cfg.epochs,
+        momentum=0.9
     )
-
-    # ====================================================
-    # 7️⃣ Optimizer và Loss
-    # ====================================================
-    optimizer = PolyOptimizer(net.parameters(), base_lr, weight_decay=1e-4, max_step=epochs, momentum=0.9)
-    criteria = torch.nn.BCEWithLogitsLoss(reduction='mean').to(device)
-
-    # ====================================================
-    # 8️⃣ Training loop
-    # ====================================================
-    loss_t, iou_v = [], []
+    start_epoch = 0
     best_val = 0.0
 
-    for epoch in range(epochs):
+    # Load pretrained or resume
+    if args.resume and os.path.exists(args.resume):
+        print(f"Resuming from checkpoint: {args.resume}")
+        ckpt = safe_load_checkpoint(args.resume, device)
+        if "model" in ckpt:
+            state_dict = strip_module_prefix(ckpt["model"])
+            net.load_state_dict(state_dict, strict=False)
+            print("Model weights restored.")
+        if "optimizer" in ckpt and hasattr(optimizer, "load_state_dict"):
+            optimizer.load_state_dict(ckpt["optimizer"])
+            print("Optimizer state restored.")
+        start_epoch = ckpt.get("epoch", 0)
+        print(f"Resumed from epoch {start_epoch}")
+    elif paths.resnet38 and os.path.exists(paths.resnet38):
+        print(f"Loading pretrained backbone: {paths.resnet38}")
+        state_dict = safe_load_checkpoint(paths.resnet38, device)
+        state_dict = strip_module_prefix(state_dict.get("model", state_dict))
+        net.load_state_dict(state_dict, strict=False)
+        print("Pretrained weights loaded.")
+    else:
+        print("No pretrained or resume checkpoint found. Training from scratch.")
+
+    if torch.cuda.is_available() and getattr(cfg, "devices", None):
+        net = torch.nn.DataParallel(net, device_ids=cfg.devices)
+    net = net.to(device)
+
+    # Dataset setup
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(size=cfg.network_image_size, scale=(0.7, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=cfg.mean, std=cfg.std)
+    ])
+    val_transform = transforms.Compose([
+        transforms.Resize((cfg.network_image_size, cfg.network_image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=cfg.mean, std=cfg.std)
+    ])
+
+    TrainDataset = dataset.TrainPatchesDataset(paths.train, transform=train_transform, num_class=cfg.num_classes)
+    ValidDataset = dataset.ValidImageMaskDataset(paths.valid, paths.mask_valid, transform=val_transform)
+    num_workers = 0 if device.type == "cpu" else 4
+    TrainLoader = DataLoader(TrainDataset, batch_size=cfg.batch_size, num_workers=num_workers,
+                             shuffle=True, drop_last=True)
+    ValidLoader = DataLoader(ValidDataset, batch_size=1, num_workers=num_workers, shuffle=False)
+    print(f"Train samples: {len(TrainDataset)} | Valid samples: {len(ValidDataset)}")
+
+    criterion = torch.nn.BCEWithLogitsLoss().to(device)
+    loss_t, iou_v = [], []
+
+    # Evaluation only
+    if args.eval_only:
+        print("Running evaluation only...")
+        cam_dir = os.path.join(paths.valid_result, args.model_name, "cam")
+        os.makedirs(cam_dir, exist_ok=True)
+        generate_validation_cam(
+            net,
+            cfg,
+            batch_size=cfg.batch_size,
+            model_name=os.path.join(args.model_name, "cam")
+        )
+        valid_iou = get_overall_valid_score(
+            os.path.join(paths.valid_result, args.model_name, "cam"),
+            paths.mask_valid,
+            num_workers=num_workers
+        )
+        print(f"Validation mIoU: {valid_iou:.4f}")
+        return
+
+    # Training loop
+    for epoch in range(start_epoch, cfg.epochs):
         net.train()
         running_loss = 0.0
 
-        for img, label in tqdm(TrainDataLoader, desc=f"Epoch {epoch+1}/{epochs}"):
-            img, label = img.to(device), label.to(device).float()
-
-            scores = net(img)
-            loss = criteria(scores, label)
+        for imgs, labels in tqdm(TrainLoader, desc=f"Epoch {epoch+1}/{cfg.epochs}"):
+            imgs, labels = imgs.to(device), labels.to(device).float()
+            preds = net(imgs)
+            loss = criterion(preds, labels)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
 
-        train_loss = running_loss / len(TrainDataLoader)
-        loss_t.append(train_loss)
+        avg_loss = running_loss / max(1, len(TrainLoader))
+        loss_t.append(avg_loss)
+        print(f"Epoch {epoch+1}: Train Loss = {avg_loss:.4f}")
 
-        print(f"📘 Epoch {epoch+1}: Train Loss = {train_loss:.4f}")
+        # Validation
+        if (epoch + 1) % cfg.test_every == 0 or (epoch + 1) == cfg.epochs:
+            pre_val_path = os.path.join(paths.weights, f"{args.model_name}_epoch{epoch+1:02d}_preval.pth")
+            torch.save({
+                "model": net.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "epoch": epoch + 1
+            }, pre_val_path)
+            print(f"Saved checkpoint before validation → {pre_val_path}")
 
-        # ====================================================
-        # Validation mỗi test_every epoch
-        # ====================================================
-        if test_every != 0 and ((epoch + 1) % test_every == 0 or (epoch + 1) == epochs):
-            net_cam = getattr(importlib.import_module("network.wide_resnet"), 'wideResNet')()
-            pretrained = net.state_dict()
-            pretrained = {k.replace("module.", ""): v for k, v in pretrained.items()}
-            pretrained['fc_cam.weight'] = pretrained['fc_cls.weight'].unsqueeze(-1).unsqueeze(-1).to(torch.float64)
-            pretrained['fc_cam.bias'] = pretrained['fc_cls.bias']
-
-            net_cam.load_state_dict(pretrained, strict=False)
-            net_cam = net_cam.to(device)
-
-            valid_image_path = os.path.join(validation_folder_name, model_name)
-            generate_validation_cam(net_cam, config, batch_size, validation_dataset_path, validation_folder_name, model_name)
-            valid_iou = get_overall_valid_score(valid_image_path, validation_mask_path, num_workers=4)
+            cam_dir = os.path.join(paths.valid_result, args.model_name, "cam")
+            os.makedirs(cam_dir, exist_ok=True)
+            print("Generating CAMs for validation...")
+            generate_validation_cam(
+                net,
+                cfg,
+                batch_size=cfg.batch_size,
+                model_name=os.path.join(args.model_name, "cam")
+            )
+            valid_iou = get_overall_valid_score(
+                os.path.join(paths.valid_result, args.model_name, "cam"),
+                paths.mask_valid,
+                num_workers=num_workers
+            )
             iou_v.append(valid_iou)
 
             if valid_iou > best_val:
                 best_val = valid_iou
-                print("🔥 New best model found — saving checkpoint...")
+                best_path = os.path.join(paths.weights, f"{args.model_name}_best.pth")
                 torch.save({
                     "model": net.state_dict(),
-                    "optimizer": optimizer.state_dict()
-                }, f"./classification/weights/{model_name}_best.pth")
+                    "optimizer": optimizer.state_dict(),
+                    "epoch": epoch + 1
+                }, best_path)
+                print(f"New best model saved to {best_path}")
 
-            print(f"📈 Valid mIOU: {valid_iou:.4f}, Dice: {2 * valid_iou / (1 + valid_iou):.4f}")
+            print(f"Validation mIoU: {valid_iou:.4f}")
 
-    # ====================================================
-    # 9️⃣ Save last model + plots
-    # ====================================================
-    torch.save({"model": net.state_dict(), "optimizer": optimizer.state_dict()},
-               f"./classification/weights/{model_name}_last.pth")
+    last_path = os.path.join(paths.weights, f"{args.model_name}_last.pth")
+    torch.save({
+        "model": net.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": cfg.epochs
+    }, last_path)
+    print(f"Final model saved → {last_path}")
+    print("Training completed successfully!")
 
-    plt.figure()
-    plt.plot(loss_t)
-    plt.ylabel('Loss')
-    plt.xlabel('Epochs')
-    plt.title('Training Loss')
-    plt.savefig('./classification/result/train_loss.png')
 
-    plt.figure()
-    plt.plot(list(range(test_every, epochs + 1, test_every)), iou_v)
-    plt.ylabel('mIoU')
-    plt.xlabel('Epochs')
-    plt.title('Validation mIoU')
-    plt.savefig('./classification/result/valid_iou.png')
-
-    print("✅ Training finished successfully!")
+if __name__ == "__main__":
+    main()
